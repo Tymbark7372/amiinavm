@@ -92,6 +92,7 @@ TOTAL DETECTIONS: 0
 - some checks may have false positives (timing can vary)
 - hyper-v being enabled on windows makes CPUID report a hypervisor even on bare metal
 - sandbox environments (Windows Sandbox, etc) will be detected as VMs
+- **having VM software installed** (VMware Workstation, VirtualBox, etc.) on your host machine will trigger detections due to virtual network adapters, drivers, and services - this doesn't mean you're in a VM, just that you have VM software installed
 
 ## license
 
