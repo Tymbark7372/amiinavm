@@ -734,32 +734,30 @@ static void hide_indicators(void) {
     printf("\n  [*] Note: Some changes require reboot to take effect.\n");
 }
 
-int main(int argc, char* argv[]) {
-    hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
-    
-    int hide_mode = 0;
-    if (argc > 1) {
-        for (int i = 1; i < argc; i++) {
-            if (strcmp(argv[i], "--hide") == 0 || strcmp(argv[i], "-h") == 0) {
-                hide_mode = 1;
-                break;
-            } else if (strcmp(argv[i], "--help") == 0) {
-                printf("amiinavm - VM detection tool\n");
-                printf("usage: amiinavm.exe [--hide]\n");
-                printf("  --hide    hide VM indicators (requires admin)\n");
-                printf("  --help    show this help\n");
-                return 0;
-            }
-        }
-    }
-    
-    if (hide_mode) {
-        hide_indicators();
-        printf("\n  Press enter to exit...");
-        getchar();
-        return 0;
-    }
-    
+static void print_banner(void) {
+    set_color(COLOR_DIM);
+    printf("\n  +===================================================+\n");
+    set_color(COLOR_TITLE);
+    printf("  |");
+    set_color(COLOR_ACCENT);
+    printf("       amiinavm ");
+    set_color(COLOR_DEFAULT);
+    printf("- VM detection tool            ");
+    set_color(COLOR_TITLE);
+    printf("|\n");
+    set_color(COLOR_TITLE);
+    printf("  |           made by ");
+    set_color(COLOR_ACCENT);
+    printf("Tymbark7372");
+    set_color(COLOR_TITLE);
+    printf("            |\n");
+    set_color(COLOR_DIM);
+    printf("  +===================================================+\n");
+    set_color(COLOR_DEFAULT);
+    printf("\n");
+}
+
+static void run_detection(void) {
     printf("=====================================================\n");
     printf("           amiinavm - VM detection tool              \n");
     printf("=====================================================\n\n");
@@ -856,9 +854,122 @@ int main(int argc, char* argv[]) {
         printf("      strong evidence of virtualization\n");
     }
     printf("=====================================================\n");
+}
+
+static void interactive_menu(void) {
+    char input[32];
     
-    printf("\npress enter to exit...");
-    getchar();
+    print_banner();
     
-    return detections > 0 ? 1 : 0;
+    set_color(COLOR_DEFAULT);
+    printf("  what do you want to do?\n\n");
+    set_color(COLOR_INFO);
+    printf("  [1] ");
+    set_color(COLOR_DEFAULT);
+    printf("detect VM indicators\n");
+    set_color(COLOR_INFO);
+    printf("  [2] ");
+    set_color(COLOR_DEFAULT);
+    printf("hide VM indicators (requires admin)\n");
+    set_color(COLOR_INFO);
+    printf("  [3] ");
+    set_color(COLOR_DEFAULT);
+    printf("exit\n\n");
+    set_color(COLOR_DEFAULT);
+    printf("  choice ");
+    set_color(COLOR_DIM);
+    printf("(1-3)");
+    set_color(COLOR_DEFAULT);
+    printf(": ");
+    set_color(COLOR_ACCENT);
+    fgets(input, sizeof(input), stdin);
+    set_color(COLOR_DEFAULT);
+    
+    int choice = atoi(input);
+    
+    if (choice == 1) {
+        run_detection();
+        printf("\npress enter to exit...");
+        getchar();
+    } else if (choice == 2) {
+        set_color(COLOR_ERROR);
+        printf("\n  [!] WARNING: This tool modifies system registry!\n");
+        set_color(COLOR_DEFAULT);
+        printf("  [!] Run as administrator. Some changes may break\n");
+        printf("      VM guest tools functionality.\n");
+        printf("\n");
+        hide_indicators();
+        printf("\n  Press enter to exit...");
+        getchar();
+    }
+}
+
+int main(int argc, char* argv[]) {
+    hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    
+    int hide_mode = 0;
+    int detect_mode = 0;
+    
+    if (argc > 1) {
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--hide") == 0) {
+                hide_mode = 1;
+                break;
+            } else if (strcmp(argv[i], "--detect") == 0) {
+                detect_mode = 1;
+                break;
+            } else if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+                printf("amiinavm - VM detection tool\n");
+                printf("usage: amiinavm.exe [option]\n");
+                printf("  --detect  detect VM indicators (default)\n");
+                printf("  --hide    hide VM indicators (requires admin)\n");
+                printf("  --help    show this help\n");
+                printf("\n");
+                printf("  if no option is provided, interactive menu will appear\n");
+                return 0;
+            }
+        }
+    }
+    
+    if (hide_mode) {
+        set_color(COLOR_DIM);
+        printf("\n  +===================================================+\n");
+        set_color(COLOR_TITLE);
+        printf("  |");
+        set_color(COLOR_ACCENT);
+        printf("       amiinavm ");
+        set_color(COLOR_DEFAULT);
+        printf("- hide VM indicators        ");
+        set_color(COLOR_TITLE);
+        printf("|\n");
+        set_color(COLOR_TITLE);
+        printf("  |           made by ");
+        set_color(COLOR_ACCENT);
+        printf("Tymbark7372");
+        set_color(COLOR_TITLE);
+        printf("            |\n");
+        set_color(COLOR_DIM);
+        printf("  +===================================================+\n");
+        set_color(COLOR_DEFAULT);
+        printf("\n");
+        set_color(COLOR_ERROR);
+        printf("  [!] WARNING: This tool modifies system registry!\n");
+        set_color(COLOR_DEFAULT);
+        printf("  [!] Run as administrator. Some changes may break\n");
+        printf("      VM guest tools functionality.\n");
+        printf("\n");
+        
+        hide_indicators();
+        printf("\n  Press enter to exit...");
+        getchar();
+        return 0;
+    }
+    
+    if (detect_mode) {
+        run_detection();
+        return detections > 0 ? 1 : 0;
+    }
+    
+    interactive_menu();
+    return 0;
 }
