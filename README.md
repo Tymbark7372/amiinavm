@@ -58,7 +58,14 @@ cl /O2 amiinavm.c /Fe:amiinavm.exe /link iphlpapi.lib advapi32.lib
 ## running
 
 ```batch
+# detect VM indicators
 amiinavm.exe
+
+# hide VM indicators (requires admin)
+amiinavm.exe --hide
+
+# show help
+amiinavm.exe --help
 ```
 
 exit code is 1 if VM detected, 0 if bare metal
@@ -86,6 +93,31 @@ TOTAL DETECTIONS: 0
 [+] RESULT: BARE METAL
     no VM indicators found
 ```
+
+## hiding VM indicators
+
+use `--hide` to hide modifiable VM indicators:
+
+```batch
+amiinavm.exe --hide
+```
+
+**⚠️ WARNING: Requires administrator privileges!**
+
+this will:
+- delete VM-related registry keys (VMware Tools, VirtualBox, services, etc.)
+- modify hardware/BIOS strings in registry
+- modify disk/video adapter names
+- remove VM environment variables
+
+**what it cannot hide:**
+- CPUID hypervisor bit (hardware-level)
+- CPUID/RDTSC timing (hardware-level)
+- running VM processes (requires kernel driver)
+- VM driver files (in use, protected)
+- VM device handles (requires kernel driver)
+
+some changes may require reboot to take effect.
 
 ## notes
 

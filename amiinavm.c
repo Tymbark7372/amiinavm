@@ -15,6 +15,21 @@
 #include <intrin.h>
 
 #pragma comment(lib, "iphlpapi.lib")
+#pragma comment(lib, "advapi32.lib")
+
+#define COLOR_DEFAULT 7
+#define COLOR_TITLE 11
+#define COLOR_SUCCESS 10
+#define COLOR_INFO 14
+#define COLOR_ERROR 12
+#define COLOR_ACCENT 12
+#define COLOR_DIM 8
+
+HANDLE hConsole;
+
+void set_color(int color) {
+    SetConsoleTextAttribute(hConsole, color);
+}
 
 int detections = 0;
 int hyperv_host = 0;
@@ -426,7 +441,325 @@ void check_env() {
     if (found == 0) printf("[-] Env: no VM environment variables\n");
 }
 
-int main() {
+static int delete_registry_key_recursive(HKEY hkey_parent, const char* subkey) {
+    HKEY hkey;
+    LONG result = RegOpenKeyExA(hkey_parent, subkey, 0, KEY_READ | KEY_WRITE, &hkey);
+    if (result != ERROR_SUCCESS) {
+        return result;
+    }
+    
+    char name[256];
+    DWORD name_size;
+    FILETIME ft;
+    
+    while (1) {
+        name_size = sizeof(name);
+        result = RegEnumKeyExA(hkey, 0, name, &name_size, NULL, NULL, NULL, &ft);
+        if (result == ERROR_NO_MORE_ITEMS) break;
+        if (result != ERROR_SUCCESS) {
+            RegCloseKey(hkey);
+            return result;
+        }
+        delete_registry_key_recursive(hkey, name);
+    }
+    
+    RegCloseKey(hkey);
+    return RegDeleteKeyExA(hkey_parent, subkey, KEY_WOW64_64KEY, 0);
+}
+
+static int hide_registry_keys(void) {
+    struct { const char* key; const char* desc; } keys[] = {
+        {"SOFTWARE\\VMware, Inc.\\VMware Tools", "VMware Tools"},
+        {"SOFTWARE\\Oracle\\VirtualBox Guest Additions", "VirtualBox GA"},
+        {"SOFTWARE\\Microsoft\\Virtual Machine\\Guest\\Parameters", "Hyper-V Guest"},
+        {"HARDWARE\\ACPI\\DSDT\\VBOX__", "VBox ACPI DSDT"},
+        {"HARDWARE\\ACPI\\FADT\\VBOX__", "VBox ACPI FADT"},
+        {"HARDWARE\\ACPI\\RSDT\\VBOX__", "VBox ACPI RSDT"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxGuest", "VBoxGuest Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxMouse", "VBoxMouse Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxService", "VBoxService Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxSF", "VBoxSF Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxVideo", "VBoxVideo Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\vmci", "VMware vmci Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\vmhgfs", "VMware vmhgfs Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\vmmouse", "VMware vmmouse Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\vmrawdsk", "VMware vmrawdsk Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\vmusbmouse", "VMware vmusbmouse Service"},
+        {"SOFTWARE\\Wine", "Wine"},
+        {"SYSTEM\\CurrentControlSet\\Services\\vioscsi", "VirtIO SCSI Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\viostor", "VirtIO Storage Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\balloon", "QEMU Balloon Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxUSBMon", "VBoxUSBMon Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\VBoxUSB", "VBoxUSB Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\prl_eth", "Parallels Ethernet Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\prl_fs", "Parallels Filesystem Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\prl_mouf", "Parallels Mouse Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\prl_pv", "Parallels Paravirtual Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\prl_time", "Parallels Time Service"},
+        {"SYSTEM\\CurrentControlSet\\Services\\prl_vid", "Parallels Video Service"},
+        {NULL, NULL}
+    };
+    
+    HKEY hkey;
+    LONG result;
+    int hidden = 0;
+    
+    for (int i = 0; keys[i].key != NULL; i++) {
+        result = RegOpenKeyExA(HKEY_LOCAL_MACHINE, keys[i].key, 0, KEY_READ, &hkey);
+        if (result == ERROR_SUCCESS) {
+            RegCloseKey(hkey);
+            
+            char* parent_key = _strdup(keys[i].key);
+            char* last_backslash = strrchr(parent_key, '\\');
+            if (last_backslash) {
+                *last_backslash = '\0';
+                const char* subkey = last_backslash + 1;
+                
+                result = RegOpenKeyExA(HKEY_LOCAL_MACHINE, parent_key, 0, KEY_WRITE, &hkey);
+                if (result == ERROR_SUCCESS) {
+                    result = delete_registry_key_recursive(hkey, subkey);
+                    if (result == ERROR_SUCCESS || result == ERROR_FILE_NOT_FOUND) {
+                        set_color(COLOR_SUCCESS);
+                        printf("  [+] Hidden: ");
+                        set_color(COLOR_DEFAULT);
+                        printf("%s\n", keys[i].desc);
+                        hidden++;
+                    }
+                    RegCloseKey(hkey);
+                }
+            }
+            free(parent_key);
+        }
+    }
+    
+    return hidden;
+}
+
+static int hide_hardware_strings(void) {
+    struct { const char* key; const char* value; const char* fake_value; } strings[] = {
+        {"HARDWARE\\DESCRIPTION\\System\\BIOS", "SystemManufacturer", "System manufacturer"},
+        {"HARDWARE\\DESCRIPTION\\System\\BIOS", "SystemProductName", "System Product Name"},
+        {"HARDWARE\\DESCRIPTION\\System\\BIOS", "BIOSVendor", "American Megatrends Inc."},
+        {"HARDWARE\\DESCRIPTION\\System\\BIOS", "BaseBoardManufacturer", "ASUSTeK COMPUTER INC."},
+        {"HARDWARE\\DESCRIPTION\\System\\BIOS", "BaseBoardProduct", "PRIME B450M-A"},
+        {"SYSTEM\\CurrentControlSet\\Control\\SystemInformation", "SystemManufacturer", "System manufacturer"},
+        {"SYSTEM\\CurrentControlSet\\Control\\SystemInformation", "SystemProductName", "System Product Name"},
+        {"SYSTEM\\HardwareConfig\\Current", "SystemFamily", "Desktop"},
+        {NULL, NULL, NULL}
+    };
+    
+    HKEY hkey;
+    LONG result;
+    int modified = 0;
+    
+    for (int i = 0; strings[i].key != NULL; i++) {
+        result = RegOpenKeyExA(HKEY_LOCAL_MACHINE, strings[i].key, 0, KEY_READ | KEY_WRITE, &hkey);
+        if (result == ERROR_SUCCESS) {
+            char buffer[256];
+            DWORD bufsize = sizeof(buffer);
+            
+            if (RegQueryValueExA(hkey, strings[i].value, NULL, NULL, (LPBYTE)buffer, &bufsize) == ERROR_SUCCESS) {
+                if (strstr(buffer, "VMware") || strstr(buffer, "VirtualBox") || 
+                    strstr(buffer, "VBOX") || strstr(buffer, "Virtual") || 
+                    strstr(buffer, "QEMU") || strstr(buffer, "innotek") || 
+                    strstr(buffer, "Xen") || strstr(buffer, "Parallels") ||
+                    strstr(buffer, "KVM") || strstr(buffer, "Bochs")) {
+                    
+                    result = RegSetValueExA(hkey, strings[i].value, 0, REG_SZ, 
+                        (BYTE*)strings[i].fake_value, strlen(strings[i].fake_value) + 1);
+                    
+                    if (result == ERROR_SUCCESS) {
+                        set_color(COLOR_SUCCESS);
+                        printf("  [+] Modified: ");
+                        set_color(COLOR_DEFAULT);
+                        printf("%s\\%s -> ", strings[i].key, strings[i].value);
+                        set_color(COLOR_INFO);
+                        printf("%s\n", strings[i].fake_value);
+                        set_color(COLOR_DEFAULT);
+                        modified++;
+                    }
+                }
+            }
+            RegCloseKey(hkey);
+        }
+    }
+    
+    return modified;
+}
+
+static int hide_disk_video_strings(void) {
+    HKEY hkey;
+    char buffer[512];
+    DWORD bufsize;
+    LONG result;
+    int modified = 0;
+    
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Services\\Disk\\Enum", 0, KEY_READ | KEY_WRITE, &hkey) == ERROR_SUCCESS) {
+        
+        bufsize = sizeof(buffer);
+        if (RegQueryValueExA(hkey, "0", NULL, NULL, (LPBYTE)buffer, &bufsize) == ERROR_SUCCESS) {
+            _strupr(buffer);
+            if (strstr(buffer, "VBOX") || strstr(buffer, "VMWARE") || 
+                strstr(buffer, "QEMU") || strstr(buffer, "VIRTUAL HD")) {
+                
+                const char* fake = "IDE\\DiskGeneric";
+                result = RegSetValueExA(hkey, "0", 0, REG_SZ, (BYTE*)fake, strlen(fake) + 1);
+                if (result == ERROR_SUCCESS) {
+                    set_color(COLOR_SUCCESS);
+                    printf("  [+] Modified: Disk 0 -> ");
+                    set_color(COLOR_INFO);
+                    printf("%s\n", fake);
+                    set_color(COLOR_DEFAULT);
+                    modified++;
+                }
+            }
+        }
+        RegCloseKey(hkey);
+    }
+    
+    if (RegOpenKeyExA(HKEY_LOCAL_MACHINE,
+        "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e968-e325-11ce-bfc1-08002be10318}\\0000",
+        0, KEY_READ | KEY_WRITE, &hkey) == ERROR_SUCCESS) {
+        
+        bufsize = sizeof(buffer);
+        if (RegQueryValueExA(hkey, "DriverDesc", NULL, NULL, (LPBYTE)buffer, &bufsize) == ERROR_SUCCESS) {
+            if (strstr(buffer, "VMware") || strstr(buffer, "VBox") || 
+                strstr(buffer, "VirtualBox") || strstr(buffer, "QEMU") ||
+                strstr(buffer, "Parallels") || strstr(buffer, "Hyper-V")) {
+                
+                const char* fake = "NVIDIA GeForce GTX 1060";
+                result = RegSetValueExA(hkey, "DriverDesc", 0, REG_SZ, (BYTE*)fake, strlen(fake) + 1);
+                if (result == ERROR_SUCCESS) {
+                    set_color(COLOR_SUCCESS);
+                    printf("  [+] Modified: Video adapter -> ");
+                    set_color(COLOR_INFO);
+                    printf("%s\n", fake);
+                    set_color(COLOR_DEFAULT);
+                    modified++;
+                }
+            }
+        }
+        RegCloseKey(hkey);
+    }
+    
+    return modified;
+}
+
+static int hide_env_vars(void) {
+    const char* vars[] = {"VIRTUAL_ENV", "VBOX_MSI_INSTALL", NULL};
+    int hidden = 0;
+    
+    for (int i = 0; vars[i] != NULL; i++) {
+        if (getenv(vars[i]) != NULL) {
+            if (SetEnvironmentVariableA(vars[i], NULL)) {
+                set_color(COLOR_SUCCESS);
+                printf("  [+] Removed env var: ");
+                set_color(COLOR_DEFAULT);
+                printf("%s\n", vars[i]);
+                hidden++;
+            }
+        }
+    }
+    
+    return hidden;
+}
+
+static void hide_indicators(void) {
+    hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    
+    BOOL is_admin = FALSE;
+    HANDLE token = NULL;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token)) {
+        TOKEN_ELEVATION elevation;
+        DWORD size;
+        if (GetTokenInformation(token, TokenElevation, &elevation, sizeof(elevation), &size)) {
+            is_admin = elevation.TokenIsElevated;
+        }
+        CloseHandle(token);
+    }
+    
+    if (!is_admin) {
+        set_color(COLOR_ERROR);
+        printf("  [!] ERROR: Not running as administrator!\n");
+        set_color(COLOR_DEFAULT);
+        printf("  [!] This tool requires admin privileges to modify registry.\n");
+        return;
+    }
+    
+    set_color(COLOR_INFO);
+    printf("\n  [*] Starting VM indicator hiding...\n\n");
+    set_color(COLOR_DEFAULT);
+    
+    int total_hidden = 0;
+    
+    set_color(COLOR_INFO);
+    printf("  [*] Hiding registry keys...\n");
+    set_color(COLOR_DEFAULT);
+    total_hidden += hide_registry_keys();
+    printf("\n");
+    
+    set_color(COLOR_INFO);
+    printf("  [*] Modifying hardware strings...\n");
+    set_color(COLOR_DEFAULT);
+    total_hidden += hide_hardware_strings();
+    printf("\n");
+    
+    set_color(COLOR_INFO);
+    printf("  [*] Modifying disk/video strings...\n");
+    set_color(COLOR_DEFAULT);
+    total_hidden += hide_disk_video_strings();
+    printf("\n");
+    
+    set_color(COLOR_INFO);
+    printf("  [*] Removing environment variables...\n");
+    set_color(COLOR_DEFAULT);
+    total_hidden += hide_env_vars();
+    printf("\n");
+    
+    set_color(COLOR_DIM);
+    printf("  +-----------------------------------------------+\n");
+    set_color(COLOR_DEFAULT);
+    printf("  |  ");
+    set_color(COLOR_SUCCESS);
+    printf("TOTAL HIDDEN:");
+    set_color(COLOR_ACCENT);
+    printf(" %-3d", total_hidden);
+    set_color(COLOR_DEFAULT);
+    printf(" indicators                    |\n");
+    set_color(COLOR_DIM);
+    printf("  +-----------------------------------------------+\n");
+    set_color(COLOR_DEFAULT);
+    
+    printf("\n  [*] Note: Some changes require reboot to take effect.\n");
+}
+
+int main(int argc, char* argv[]) {
+    hConsole = GetStdHandle(STD_OUTPUT_HANDLE);
+    
+    int hide_mode = 0;
+    if (argc > 1) {
+        for (int i = 1; i < argc; i++) {
+            if (strcmp(argv[i], "--hide") == 0 || strcmp(argv[i], "-h") == 0) {
+                hide_mode = 1;
+                break;
+            } else if (strcmp(argv[i], "--help") == 0) {
+                printf("amiinavm - VM detection tool\n");
+                printf("usage: amiinavm.exe [--hide]\n");
+                printf("  --hide    hide VM indicators (requires admin)\n");
+                printf("  --help    show this help\n");
+                return 0;
+            }
+        }
+    }
+    
+    if (hide_mode) {
+        hide_indicators();
+        printf("\n  Press enter to exit...");
+        getchar();
+        return 0;
+    }
+    
     printf("=====================================================\n");
     printf("           amiinavm - VM detection tool              \n");
     printf("=====================================================\n\n");
